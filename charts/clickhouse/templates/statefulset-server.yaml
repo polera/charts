@@ -154,6 +154,27 @@ spec:
             {{- if $backupPath }}
             - { name: backups, mountPath: {{ .Values.backup.destination.path.directory }} }
             {{- end }}
+        {{- if eq (include "clickhouse.backup.chbEnabled" .) "true" }}
+        {{- $chb := .Values.backup.clickhouseBackup }}
+        - name: clickhouse-backup
+          image: "{{ $chb.image.repository }}:{{ $chb.image.tag | default "latest" }}"
+          imagePullPolicy: {{ $chb.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["clickhouse-backup", "server"]
+          env:
+            {{- include "clickhouse.backup.chbEnv" . | nindent 12 }}
+          ports:
+            - { name: chb-api, containerPort: {{ $chb.apiPort }} }
+          {{- with $chb.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: data, mountPath: /var/lib/clickhouse }
+        {{- end }}
       volumes:
         - name: config-src
           configMap:

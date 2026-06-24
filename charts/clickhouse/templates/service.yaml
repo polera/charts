@@ -16,6 +16,9 @@ spec:
     - { name: http, port: 8123, targetPort: http }
     - { name: tcp, port: 9000, targetPort: tcp }
     - { name: interserver, port: 9009, targetPort: interserver }
+    {{- if eq (include "clickhouse.backup.chbEnabled" .) "true" }}
+    - { name: chb-api, port: {{ .Values.backup.clickhouseBackup.apiPort }}, targetPort: chb-api }
+    {{- end }}
 ---
 apiVersion: v1
 kind: Service

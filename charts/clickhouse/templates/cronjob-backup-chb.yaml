@@ -1,0 +1,84 @@
+{{- if eq (include "clickhouse.backup.chbEnabled" .) "true" }}
+{{- $full := include "clickhouse.fullname" . -}}
+{{- $secret := include "clickhouse.secretName" . -}}
+{{- $chb := .Values.backup.clickhouseBackup -}}
+{{- $domain := include "clickhouse.headlessDomain" . -}}
+{{- $shards := int (include "clickhouse.shards" .) -}}
+{{- $reps := int (include "clickhouse.replicasPerShard" .) -}}
+{{- $port := $chb.apiPort -}}
+{{- $prefix := $chb.namePrefix -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $full }}-backup
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: {{ .Values.backup.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backup.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "clickhouse.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "clickhouse.serviceAccountName" . }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ $chb.cronImage | quote }}
+              env:
+                - name: API_USER
+                  value: {{ .Values.auth.admin.username | quote }}
+                - name: API_PASS
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secret }}
+                      key: admin-password
+              command:
+                - /bin/sh
+                - -ec
+                - |
+                  ts="$(date +%Y%m%d-%H%M%S)"
+                  trigger() {
+                    # $1=pod fqdn  $2=backup name  $3=extra query string
+                    base="http://$1:{{ $port }}"
+                    echo "[backup] $1 -> $2"
+                    resp="$(curl -fsS -u "${API_USER}:${API_PASS}" -X POST "${base}/backup/create_remote?name=$2&delete=true$3")"
+                    opid="$(printf '%s' "$resp" | sed -n 's/.*"operationid":"\([^"]*\)".*/\1/p')"
+                    if [ -z "$opid" ]; then echo "[backup] no operation id in: $resp"; exit 1; fi
+                    while true; do
+                      st="$(curl -fsS -u "${API_USER}:${API_PASS}" "${base}/backup/status?operationid=${opid}")"
+                      printf '%s' "$st" | grep -q '"status":"in progress"' || break
+                      sleep 10
+                    done
+                    if printf '%s' "$st" | grep -q '"status":"error"'; then echo "[backup] FAILED: $st"; exit 1; fi
+                    echo "[backup] ok $2"
+                  }
+                  {{- range $s := until $shards }}
+                  {{- $lead := mul $s $reps }}
+                  trigger {{ $full }}-{{ $lead }}.{{ $domain }} "{{ $prefix }}-shard{{ $s }}-${ts}" ""
+                  {{- if $chb.schemaOnlyOtherReplicas }}
+                  {{- range $r := until $reps }}
+                  {{- if ne $r 0 }}
+                  trigger {{ $full }}-{{ add (mul $s $reps) $r }}.{{ $domain }} "{{ $prefix }}-shard{{ $s }}-rep{{ $r }}-schema-${ts}" "&schema=true"
+                  {{- end }}
+                  {{- end }}
+                  {{- end }}
+                  {{- end }}
+                  echo "[backup] complete"
+              {{- with $chb.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+{{- end }}
