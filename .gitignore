@@ -1,0 +1,30 @@
+# Packaged charts (built by `helm package` / chart-releaser; published to Releases)
+*.tgz
+
+# Downloaded chart dependencies (the nested charts/ dir inside a chart) and lockfiles
+charts/*/charts/
+Chart.lock
+requirements.lock
+
+# chart-releaser working dirs
+.cr-release-packages/
+.cr-index/
+
+# Helm install artifacts
+.helm/
+*.orig
+
+# Rendered output / local overrides
+output/
+rendered/
+*.local.yaml
+values.local.yaml
+
+# Editor / OS cruft
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/

@@ -1,0 +1,66 @@
+{{- $full := include "clickhouse.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}-headless
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "clickhouse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - { name: http, port: 8123, targetPort: http }
+    - { name: tcp, port: 9000, targetPort: tcp }
+    - { name: interserver, port: 9009, targetPort: interserver }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  {{- with .Values.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.service.type }}
+  selector:
+    {{- include "clickhouse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+  ports:
+    - name: http
+      port: {{ .Values.service.ports.http }}
+      targetPort: http
+    - name: tcp
+      port: {{ .Values.service.ports.tcp }}
+      targetPort: tcp
+    {{- if .Values.metrics.enabled }}
+    - name: metrics
+      port: {{ .Values.metrics.port }}
+      targetPort: metrics
+    {{- end }}
+{{- if .Values.ha.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "clickhouse.keeper.fullname" . }}-headless
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keeper
+spec:
+  clusterIP: None
+  publishNotReadyAddresses: true
+  selector:
+    {{- include "clickhouse.selectorLabels" . | nindent 4 }}
+    app.kubernetes.io/component: keeper
+  ports:
+    - { name: client, port: 9181, targetPort: client }
+    - { name: raft, port: 9234, targetPort: raft }
+{{- end }}

@@ -1,0 +1,50 @@
+
+{{ include "clickhouse.fullname" . }} has been deployed.
+
+Topology:
+{{- if .Values.ha.enabled }}
+  Mode:     HIGH AVAILABILITY
+  Keeper:   {{ .Values.keeper.replicas }} node(s)
+  Servers:  {{ include "clickhouse.shards" . }} shard(s) x {{ include "clickhouse.replicasPerShard" . }} replica(s) = {{ include "clickhouse.totalReplicas" . }} pod(s)
+{{- else }}
+  Mode:     STANDALONE (single node)
+{{- end }}
+  Cluster:  {{ .Values.clickhouse.clusterName }}
+  Image:    {{ include "clickhouse.image" . }}
+
+Connect from inside the cluster:
+  Host (TCP/native): {{ include "clickhouse.fullname" . }}:{{ .Values.service.ports.tcp }}
+  Host (HTTP):       {{ include "clickhouse.fullname" . }}:{{ .Values.service.ports.http }}
+
+Credentials are stored in secret "{{ include "clickhouse.secretName" . }}".
+
+  Admin user: {{ .Values.auth.admin.username }}
+  Get the admin password:
+    kubectl get secret --namespace {{ .Release.Namespace }} {{ include "clickhouse.secretName" . }} \
+      -o jsonpath="{.data.admin-password}" | base64 -d; echo
+
+Open a client session:
+  kubectl run -it --rm ch-client --namespace {{ .Release.Namespace }} \
+    --image {{ include "clickhouse.image" . }} --restart=Never -- \
+    clickhouse client --host {{ include "clickhouse.fullname" . }} \
+      --user {{ .Values.auth.admin.username }} --password '<admin-password>'
+
+Databases created: {{ join ", " .Values.databases | default "(none)" }}
+Application users:
+{{- range .Values.users }}
+  - {{ .name }} (databases: {{ join ", " .databases }})
+{{- end }}
+
+{{- if .Values.backup.enabled }}
+
+Backups: ENABLED ({{ .Values.backup.destination.type }}), schedule "{{ .Values.backup.schedule }}".
+  Trigger one immediately:
+    kubectl create job --namespace {{ .Release.Namespace }} \
+      --from=cronjob/{{ include "clickhouse.fullname" . }}-backup manual-backup-001
+{{- else }}
+
+Backups: disabled. Set backup.enabled=true to schedule BACKUP CronJobs.
+{{- end }}
+
+Run the chart tests:
+  helm test {{ .Release.Name }} --namespace {{ .Release.Namespace }}

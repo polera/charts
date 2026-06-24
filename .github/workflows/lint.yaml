@@ -1,0 +1,24 @@
+name: Lint Charts
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        env:
+          DESIRED_VERSION: v3.16.2
+        run: curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+
+      - name: Lint chart
+        run: helm lint charts/clickhouse --strict
+
+      - name: Render templates (catch template errors)
+        run: helm template charts/clickhouse > /dev/null

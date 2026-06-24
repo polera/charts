@@ -1,0 +1,42 @@
+{{- $adminUser := .Values.auth.admin.username -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clickhouse.fullname" . }}-init
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+data:
+  # Runs once per node on first boot (data dir empty) via the official image's
+  # /docker-entrypoint-initdb.d mechanism. Connects as the admin account, which
+  # has access_management enabled so it can create databases, users and grants.
+  00-bootstrap.sh: |
+    #!/bin/bash
+    set -euo pipefail
+
+    client=(clickhouse client --host 127.0.0.1 --user {{ $adminUser | quote }} --password "${CLICKHOUSE_ADMIN_PASSWORD}")
+
+    echo "[bootstrap] waiting for server to accept admin connections..."
+    until "${client[@]}" --query "SELECT 1" >/dev/null 2>&1; do sleep 1; done
+
+    echo "[bootstrap] creating databases"
+    {{- range .Values.databases }}
+    "${client[@]}" --query "CREATE DATABASE IF NOT EXISTS {{ . }}"
+    {{- end }}
+
+    {{- range $user := .Values.users }}
+    {{- $envKey := include "clickhouse.envKey" $user.name }}
+    {{- $nets := $user.allowedNetworks | default (list "::/0") }}
+    {{- $anyHost := or (has "::/0" $nets) (has "0.0.0.0/0" $nets) }}
+    echo "[bootstrap] creating user {{ $user.name }}"
+    "${client[@]}" --query "CREATE USER IF NOT EXISTS {{ $user.name }} IDENTIFIED WITH sha256_password BY '${CLICKHOUSE_USER_{{ $envKey }}_PASSWORD}' {{ if $anyHost }}HOST ANY{{ else }}HOST IP {{ range $i, $n := $nets }}{{ if $i }}, {{ end }}'{{ $n }}'{{ end }}{{ end }}"
+    "${client[@]}" --query "ALTER USER {{ $user.name }} SETTINGS PROFILE '{{ $user.profile | default "default" }}'" || true
+    {{- range $db := $user.databases }}
+    {{- if eq $db "*" }}
+    "${client[@]}" --query "GRANT ALL ON *.* TO {{ $user.name }}"
+    {{- else }}
+    "${client[@]}" --query "GRANT ALL ON {{ $db }}.* TO {{ $user.name }}"
+    {{- end }}
+    {{- end }}
+    {{- end }}
+
+    echo "[bootstrap] done"

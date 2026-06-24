@@ -1,0 +1,45 @@
+{{- $adminUser := .Values.auth.admin.username -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clickhouse.fullname" . }}-users
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+data:
+  10-users.xml: |
+    <clickhouse>
+      <profiles>
+        <default>
+          {{- range $k, $v := .Values.clickhouse.defaultProfileSettings }}
+          <{{ $k }}>{{ $v }}</{{ $k }}>
+          {{- end }}
+        </default>
+      </profiles>
+      <users>
+        <!--
+          The built-in `default` user (used for replication / distributed
+          queries) is configured by the image entrypoint from CLICKHOUSE_PASSWORD,
+          so it is intentionally not redefined here.
+        -->
+        <!-- Superuser / administrator account. -->
+        <{{ $adminUser }} replace="replace">
+          <password from_env="CLICKHOUSE_ADMIN_PASSWORD"/>
+          <networks>
+            {{- range .Values.auth.admin.allowedNetworks }}
+            <ip>{{ . }}</ip>
+            {{- end }}
+          </networks>
+          <profile>default</profile>
+          <quota>default</quota>
+          <access_management>1</access_management>
+          <named_collection_control>1</named_collection_control>
+          <show_named_collections>1</show_named_collections>
+          <show_named_collections_secrets>1</show_named_collections_secrets>
+        </{{ $adminUser }}>
+      </users>
+    </clickhouse>
+
+{{- range $name, $content := .Values.clickhouse.extraUsersConfig }}
+  {{ $name }}: |
+    {{- $content | nindent 4 }}
+{{- end }}

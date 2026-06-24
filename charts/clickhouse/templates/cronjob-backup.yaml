@@ -1,0 +1,87 @@
+{{- if .Values.backup.enabled }}
+{{- $full := include "clickhouse.fullname" . -}}
+{{- $secret := include "clickhouse.secretName" . -}}
+{{- $dbs := .Values.backup.databases | default .Values.databases -}}
+{{- $s3secret := .Values.backup.destination.s3.existingSecret | default (printf "%s-backup" $full) -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ $full }}-backup
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  concurrencyPolicy: {{ .Values.backup.concurrencyPolicy }}
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.backup.backoffLimit }}
+      template:
+        metadata:
+          labels:
+            {{- include "clickhouse.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+        spec:
+          restartPolicy: Never
+          serviceAccountName: {{ include "clickhouse.serviceAccountName" . }}
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.podSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          containers:
+            - name: backup
+              image: {{ include "clickhouse.image" . }}
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              env:
+                - name: CH_HOST
+                  value: {{ $full }}
+                - name: CH_USER
+                  value: {{ .Values.auth.admin.username }}
+                - name: CH_PASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $secret }}
+                      key: admin-password
+                {{- if eq .Values.backup.destination.type "s3" }}
+                - name: S3_ENDPOINT
+                  value: {{ .Values.backup.destination.s3.endpoint | quote }}
+                - name: S3_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $s3secret }}
+                      key: access-key-id
+                - name: S3_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ $s3secret }}
+                      key: secret-access-key
+                {{- else }}
+                - name: BACKUP_DIR
+                  value: {{ .Values.backup.destination.path.directory | quote }}
+                {{- end }}
+              command:
+                - /bin/bash
+                - -ec
+                - |
+                  ts="$(date +%Y%m%d-%H%M%S)"
+                  client=(clickhouse client --host "${CH_HOST}" --port 9000 --user "${CH_USER}" --password "${CH_PASSWORD}")
+                  {{- range $dbs }}
+                  echo "[backup] {{ . }} -> ${ts}"
+                  {{- if eq $.Values.backup.destination.type "s3" }}
+                  "${client[@]}" --query "BACKUP DATABASE {{ . }} TO S3('${S3_ENDPOINT}/{{ . }}/${ts}', '${S3_ACCESS_KEY_ID}', '${S3_SECRET_ACCESS_KEY}')"
+                  {{- else }}
+                  "${client[@]}" --query "BACKUP DATABASE {{ . }} TO File('${BACKUP_DIR}/{{ . }}/${ts}')"
+                  {{- end }}
+                  {{- end }}
+                  echo "[backup] complete"
+              {{- with .Values.resources }}
+              resources:
+                {{- toYaml . | nindent 16 }}
+              {{- end }}
+{{- end }}

@@ -1,0 +1,127 @@
+{{- if .Values.ha.enabled }}
+{{- $kfull := include "clickhouse.keeper.fullname" . -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $kfull }}
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keeper
+spec:
+  serviceName: {{ $kfull }}-headless
+  replicas: {{ .Values.keeper.replicas }}
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      {{- include "clickhouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: keeper
+  template:
+    metadata:
+      labels:
+        {{- include "clickhouse.labels" . | nindent 8 }}
+        app.kubernetes.io/component: keeper
+      annotations:
+        checksum/keeper-config: {{ include (print $.Template.BasePath "/configmap-keeper.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "clickhouse.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: keeper-init
+          image: {{ include "clickhouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              ordinal="${HOSTNAME##*-}"
+              server_id=$(( ordinal + 1 ))
+              sed "s/__SERVER_ID__/${server_id}/" /tmp/keeper-src/keeper_config.xml \
+                > /etc/clickhouse-keeper/keeper_config.xml
+              echo "keeper server_id=${server_id}"
+          volumeMounts:
+            - { name: keeper-src, mountPath: /tmp/keeper-src }
+            - { name: keeper-conf, mountPath: /etc/clickhouse-keeper }
+      containers:
+        - name: keeper
+          image: {{ include "clickhouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - clickhouse
+            - keeper
+            - --config-file=/etc/clickhouse-keeper/keeper_config.xml
+          ports:
+            - { name: client, containerPort: 9181 }
+            - { name: raft, containerPort: 9234 }
+            {{- if .Values.metrics.enabled }}
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+            {{- end }}
+          readinessProbe:
+            exec:
+              command: ["bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9181 && echo -e 'ruok' >&3 && grep -q imok <&3"]
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 6
+          livenessProbe:
+            tcpSocket:
+              port: client
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          {{- with .Values.keeper.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: keeper-conf, mountPath: /etc/clickhouse-keeper }
+            - { name: data, mountPath: /var/lib/clickhouse }
+      volumes:
+        - name: keeper-src
+          configMap:
+            name: {{ $kfull }}-config
+        - name: keeper-conf
+          emptyDir: {}
+        {{- if not .Values.keeper.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if .Values.keeper.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        {{- if .Values.keeper.persistence.storageClass }}
+        storageClassName: {{ .Values.keeper.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.keeper.persistence.size }}
+  {{- end }}
+{{- end }}

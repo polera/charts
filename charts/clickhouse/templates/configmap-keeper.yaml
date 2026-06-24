@@ -1,0 +1,52 @@
+{{- if .Values.ha.enabled }}
+{{- $kfull := include "clickhouse.keeper.fullname" . -}}
+{{- $kdomain := include "clickhouse.keeper.headlessDomain" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $kfull }}-config
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: keeper
+data:
+  # __SERVER_ID__ is substituted per-pod by an init container from the pod
+  # ordinal so each keeper has a unique raft server id.
+  keeper_config.xml: |
+    <clickhouse>
+      <logger>
+        <level>information</level>
+        <console>1</console>
+      </logger>
+      <listen_host>0.0.0.0</listen_host>
+      <max_connections>4096</max_connections>
+      <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>__SERVER_ID__</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        <coordination_settings>
+          <operation_timeout_ms>10000</operation_timeout_ms>
+          <session_timeout_ms>30000</session_timeout_ms>
+          <raft_logs_level>warning</raft_logs_level>
+        </coordination_settings>
+        <raft_configuration>
+          {{- range $i := until (int .Values.keeper.replicas) }}
+          <server>
+            <id>{{ add $i 1 }}</id>
+            <hostname>{{ $kfull }}-{{ $i }}.{{ $kdomain }}</hostname>
+            <port>9234</port>
+          </server>
+          {{- end }}
+        </raft_configuration>
+      </keeper_server>
+      {{- if .Values.metrics.enabled }}
+      <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>{{ .Values.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+      </prometheus>
+      {{- end }}
+    </clickhouse>
+{{- end }}

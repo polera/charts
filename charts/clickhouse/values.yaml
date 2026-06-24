@@ -1,0 +1,252 @@
+# Default values for the clickhouse chart.
+# This is a YAML-formatted file.
+
+# -- Override the chart name used in resource names.
+nameOverride: ""
+# -- Fully override the generated resource name prefix.
+fullnameOverride: ""
+# -- Internal Kubernetes cluster DNS domain.
+clusterDomain: cluster.local
+
+image:
+  # -- ClickHouse server image (also used for keeper). Uses the official
+  # https://hub.docker.com/_/clickhouse image by default.
+  repository: clickhouse
+  # -- Image tag. Defaults to the chart appVersion when left empty.
+  tag: ""
+  pullPolicy: IfNotPresent
+# -- Image pull secrets for private registries.
+imagePullSecrets: []
+
+# High availability ----------------------------------------------------------
+ha:
+  # -- When true, deploy a ClickHouse Keeper ensemble and run multiple
+  # replicas so tables using the Replicated*MergeTree engines are HA.
+  # When false a single standalone server is deployed.
+  enabled: false
+
+clickhouse:
+  # -- Logical cluster name exposed to ClickHouse (used by the {cluster} macro
+  # and in ON CLUSTER / Distributed table definitions).
+  clusterName: default
+  # -- Number of shards. Only honoured when ha.enabled=true.
+  shards: 1
+  # -- Replicas per shard. Only honoured when ha.enabled=true (forced to 1
+  # otherwise). Total server pods = shards * replicasPerShard.
+  replicasPerShard: 2
+  # -- Extra free-form XML merged into /etc/clickhouse-server/config.d.
+  # Map of filename -> XML string.
+  extraConfig: {}
+  # -- Extra free-form XML merged into /etc/clickhouse-server/users.d.
+  extraUsersConfig: {}
+  # -- Raw ClickHouse profile settings rendered into the default profile.
+  defaultProfileSettings:
+    max_memory_usage: 10000000000
+    load_balancing: random
+
+  # System log retention -----------------------------------------------------
+  # By default ClickHouse creates system.*_log tables (query_log, trace_log,
+  # metric_log, asynchronous_metric_log, part_log, ...) with NO TTL and MONTHLY
+  # partitions, so they grow without bound and are the usual cause of a
+  # ClickHouse instance silently eating all of its disk. This applies an
+  # expiry TTL and daily partitions so old data is dropped promptly.
+  systemLogs:
+    # -- Master switch for the retention config below.
+    enabled: true
+    # -- Expire rows in every managed system.*_log table after this many days.
+    ttlDays: 3
+    # -- Partition system logs by day instead of by month, so the TTL actually
+    # reclaims disk quickly (a monthly partition is only dropped once the whole
+    # month has aged past the TTL).
+    dailyPartitions: true
+    # -- Flush buffered log rows less frequently to reduce write amplification.
+    flushIntervalMilliseconds: 7500
+    # -- How often metric_log collects a row (ms). Higher = far fewer rows.
+    metricCollectIntervalMilliseconds: 1000
+    # -- System logs to manage. These all carry an event_date column for TTL.
+    managed:
+      - query_log
+      - query_thread_log
+      - query_views_log
+      - part_log
+      - trace_log
+      - metric_log
+      - asynchronous_metric_log
+      - text_log
+      - opentelemetry_span_log
+      - session_log
+      - processors_profile_log
+      - backup_log
+      - error_log
+    # -- Fully disable specific logs (table is neither created nor written).
+    # The biggest, least-useful offenders are usually the metric logs.
+    disable: []
+    #  - asynchronous_metric_log
+    #  - metric_log
+    #  - trace_log
+
+# Authentication -------------------------------------------------------------
+auth:
+  # -- Reference an existing secret instead of generating one. It must contain
+  # keys: admin-password, default-password and user-<NAME>-password per user.
+  existingSecret: ""
+  admin:
+    # -- Admin (superuser) account name.
+    username: admin
+    # -- Admin password. If empty a random password is generated and stored in
+    # the chart-managed secret (preserved across upgrades).
+    password: ""
+    # -- Networks the admin user may connect from.
+    allowedNetworks:
+      - "::/0"
+  # -- The built-in `default` user is used for inter-node replication and
+  # distributed queries. Its password is auto-generated unless set here.
+  defaultUser:
+    password: ""
+
+# -- Databases to create on bootstrap (created on every node, idempotently).
+databases:
+  - analytics
+
+# -- Application users to create on bootstrap. Each user is granted access to
+# the listed databases. Passwords are auto-generated unless provided.
+users:
+  - name: app
+    password: ""
+    # Databases this user is granted ALL privileges on. Use ["*"] for all.
+    databases:
+      - analytics
+    # Networks the user may connect from.
+    allowedNetworks:
+      - "::/0"
+    # ClickHouse settings profile and quota.
+    profile: default
+    quota: default
+
+# Persistence ----------------------------------------------------------------
+persistence:
+  enabled: true
+  # -- StorageClass for the server data volume. "" uses the cluster default.
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+  size: 50Gi
+  # -- Keep PVCs when the StatefulSet is deleted.
+  retain: true
+
+# Resources ------------------------------------------------------------------
+resources:
+  requests:
+    cpu: 500m
+    memory: 1Gi
+  limits:
+    memory: 4Gi
+
+# ClickHouse Keeper (only deployed when ha.enabled=true) ----------------------
+keeper:
+  # -- Number of keeper pods. Use an odd number (3 or 5) for a real quorum.
+  replicas: 3
+  resources:
+    requests:
+      cpu: 250m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+
+# Backups --------------------------------------------------------------------
+backup:
+  # -- Enable scheduled BACKUP CronJobs.
+  enabled: false
+  # -- Cron schedule (UTC).
+  schedule: "0 2 * * *"
+  # -- Databases to back up. Empty list = every database in `.Values.databases`.
+  databases: []
+  # Concurrency / history.
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 1
+  # Where backups are written.
+  destination:
+    # type: s3 | path
+    type: s3
+    s3:
+      # e.g. https://s3.amazonaws.com/my-bucket/clickhouse-backups
+      endpoint: ""
+      accessKeyId: ""
+      secretAccessKey: ""
+      # Reference an existing secret with keys access-key-id / secret-access-key
+      existingSecret: ""
+    path:
+      # Host path inside the server pods where File() backups are written.
+      # Requires a writable volume; see persistence.backups below.
+      directory: /backups
+  # Optional dedicated PVC for `path` backups, mounted on the server pods.
+  persistence:
+    enabled: false
+    storageClass: ""
+    accessModes:
+      - ReadWriteOnce
+    size: 50Gi
+
+# Service --------------------------------------------------------------------
+service:
+  type: ClusterIP
+  ports:
+    http: 8123
+    tcp: 9000
+  annotations: {}
+
+# Metrics (Prometheus endpoint exposed by ClickHouse) ------------------------
+metrics:
+  enabled: false
+  port: 9363
+  serviceMonitor:
+    enabled: false
+    interval: 30s
+    labels: {}
+
+# PodDisruptionBudget (created when ha.enabled=true) -------------------------
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# Scheduling / pod settings --------------------------------------------------
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podAnnotations: {}
+podLabels: {}
+
+# fsGroup ensures the clickhouse user (uid 101) can write the data volume.
+podSecurityContext:
+  fsGroup: 101
+securityContext:
+  runAsUser: 101
+  runAsGroup: 101
+  runAsNonRoot: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+# -- Spread server replicas across nodes for availability.
+topologySpreadConstraints: []
+
+# Liveness/readiness probe tuning.
+probes:
+  liveness:
+    initialDelaySeconds: 30
+    periodSeconds: 15
+    timeoutSeconds: 5
+    failureThreshold: 6
+  readiness:
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6

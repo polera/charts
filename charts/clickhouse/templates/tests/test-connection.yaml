@@ -1,0 +1,34 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ include "clickhouse.fullname" . }}-test
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: test
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test
+      image: {{ include "clickhouse.image" . }}
+      imagePullPolicy: {{ .Values.image.pullPolicy }}
+      env:
+        - name: CH_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: {{ include "clickhouse.secretName" . }}
+              key: admin-password
+      command:
+        - /bin/bash
+        - -ec
+        - |
+          clickhouse client --host {{ include "clickhouse.fullname" . }} --port 9000 \
+            --user {{ .Values.auth.admin.username }} --password "${CH_PASSWORD}" \
+            --query "SELECT 'ok', version()"
+          {{- range .Values.databases }}
+          clickhouse client --host {{ include "clickhouse.fullname" $ }} --port 9000 \
+            --user {{ $.Values.auth.admin.username }} --password "${CH_PASSWORD}" \
+            --query "EXISTS DATABASE {{ . }}" | grep -q 1
+          {{- end }}

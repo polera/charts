@@ -1,0 +1,222 @@
+{{- $full := include "clickhouse.fullname" . -}}
+{{- $reps := int (include "clickhouse.replicasPerShard" .) -}}
+{{- $secret := include "clickhouse.secretName" . -}}
+{{- $backupPath := and .Values.backup.enabled (eq .Values.backup.destination.type "path") .Values.backup.persistence.enabled -}}
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ $full }}
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+    app.kubernetes.io/component: server
+spec:
+  serviceName: {{ $full }}-headless
+  replicas: {{ include "clickhouse.totalReplicas" . }}
+  podManagementPolicy: Parallel
+  updateStrategy:
+    type: RollingUpdate
+  selector:
+    matchLabels:
+      {{- include "clickhouse.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      labels:
+        {{- include "clickhouse.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-config.yaml") . | sha256sum }}
+        checksum/users: {{ include (print $.Template.BasePath "/configmap-users.yaml") . | sha256sum }}
+        checksum/init: {{ include (print $.Template.BasePath "/configmap-init.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "clickhouse.serviceAccountName" . }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: config-init
+          image: {{ include "clickhouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command:
+            - /bin/bash
+            - -ec
+            - |
+              cp /tmp/config-src/* /etc/clickhouse-server/config.d/ 2>/dev/null || true
+              cp /tmp/users-src/* /etc/clickhouse-server/users.d/ 2>/dev/null || true
+              ordinal="${HOSTNAME##*-}"
+              reps={{ $reps }}
+              shard=$(( ordinal / reps + 1 ))
+              cat > /etc/clickhouse-server/config.d/01-macros.xml <<EOF
+              <clickhouse>
+                <macros>
+                  <installation>{{ $full }}</installation>
+                  <cluster>{{ .Values.clickhouse.clusterName }}</cluster>
+                  <shard>${shard}</shard>
+                  <replica>${HOSTNAME}</replica>
+                </macros>
+              </clickhouse>
+              EOF
+              echo "configured shard=${shard} replica=${HOSTNAME}"
+          volumeMounts:
+            - { name: config-src, mountPath: /tmp/config-src }
+            - { name: users-src, mountPath: /tmp/users-src }
+            - { name: config-d, mountPath: /etc/clickhouse-server/config.d }
+            - { name: users-d, mountPath: /etc/clickhouse-server/users.d }
+      containers:
+        - name: clickhouse
+          image: {{ include "clickhouse.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_FQDN
+              value: "$(POD_NAME).{{ include "clickhouse.headlessDomain" . }}"
+            # The image entrypoint uses CLICKHOUSE_USER/PASSWORD to set the
+            # built-in default user's password.
+            - name: CLICKHOUSE_USER
+              value: default
+            - name: CLICKHOUSE_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: default-password
+            # Referenced from config XML via from_env.
+            - name: CLICKHOUSE_DEFAULT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: default-password
+            - name: CLICKHOUSE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: admin-password
+            {{- range .Values.users }}
+            - name: CLICKHOUSE_USER_{{ include "clickhouse.envKey" .name }}_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: user-{{ .name }}-password
+            {{- end }}
+          ports:
+            - { name: http, containerPort: 8123 }
+            - { name: tcp, containerPort: 9000 }
+            - { name: interserver, containerPort: 9009 }
+            {{- if .Values.metrics.enabled }}
+            - { name: metrics, containerPort: {{ .Values.metrics.port }} }
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.probes.liveness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.liveness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.liveness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.liveness.failureThreshold }}
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: {{ .Values.probes.readiness.initialDelaySeconds }}
+            periodSeconds: {{ .Values.probes.readiness.periodSeconds }}
+            timeoutSeconds: {{ .Values.probes.readiness.timeoutSeconds }}
+            failureThreshold: {{ .Values.probes.readiness.failureThreshold }}
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - { name: config-d, mountPath: /etc/clickhouse-server/config.d }
+            - { name: users-d, mountPath: /etc/clickhouse-server/users.d }
+            - { name: init-scripts, mountPath: /docker-entrypoint-initdb.d }
+            - { name: data, mountPath: /var/lib/clickhouse }
+            {{- if $backupPath }}
+            - { name: backups, mountPath: {{ .Values.backup.destination.path.directory }} }
+            {{- end }}
+      volumes:
+        - name: config-src
+          configMap:
+            name: {{ $full }}-config
+        - name: users-src
+          configMap:
+            name: {{ $full }}-users
+        - name: init-scripts
+          configMap:
+            name: {{ $full }}-init
+            defaultMode: 0755
+        - name: config-d
+          emptyDir: {}
+        - name: users-d
+          emptyDir: {}
+        {{- if not .Values.persistence.enabled }}
+        - name: data
+          emptyDir: {}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if or .Values.persistence.enabled $backupPath }}
+  volumeClaimTemplates:
+    {{- if .Values.persistence.enabled }}
+    - metadata:
+        name: data
+        labels:
+          {{- include "clickhouse.selectorLabels" . | nindent 10 }}
+      spec:
+        accessModes:
+          {{- toYaml .Values.persistence.accessModes | nindent 10 }}
+        {{- if .Values.persistence.storageClass }}
+        storageClassName: {{ .Values.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.persistence.size }}
+    {{- end }}
+    {{- if $backupPath }}
+    - metadata:
+        name: backups
+      spec:
+        accessModes:
+          {{- toYaml .Values.backup.persistence.accessModes | nindent 10 }}
+        {{- if .Values.backup.persistence.storageClass }}
+        storageClassName: {{ .Values.backup.persistence.storageClass }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.backup.persistence.size }}
+    {{- end }}
+  {{- end }}

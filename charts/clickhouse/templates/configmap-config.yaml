@@ -1,0 +1,136 @@
+{{- $full := include "clickhouse.fullname" . -}}
+{{- $reps := int (include "clickhouse.replicasPerShard" .) -}}
+{{- $shards := int (include "clickhouse.shards" .) -}}
+{{- $domain := include "clickhouse.headlessDomain" . -}}
+{{- $cluster := .Values.clickhouse.clusterName -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $full }}-config
+  labels:
+    {{- include "clickhouse.labels" . | nindent 4 }}
+data:
+  00-listen.xml: |
+    <clickhouse>
+      <listen_host>0.0.0.0</listen_host>
+      <interserver_http_host from_env="POD_FQDN"/>
+      <logger>
+        <level>information</level>
+        <console>1</console>
+      </logger>
+      {{- if .Values.metrics.enabled }}
+      <prometheus>
+        <endpoint>/metrics</endpoint>
+        <port>{{ .Values.metrics.port }}</port>
+        <metrics>true</metrics>
+        <events>true</events>
+        <asynchronous_metrics>true</asynchronous_metrics>
+      </prometheus>
+      {{- end }}
+    </clickhouse>
+
+  10-cluster.xml: |
+    <clickhouse>
+      <remote_servers>
+        <{{ $cluster }}>
+          {{- range $s := until $shards }}
+          <shard>
+            <internal_replication>true</internal_replication>
+            {{- range $r := until $reps }}
+            {{- $ordinal := add (mul $s $reps) $r }}
+            <replica>
+              <host>{{ $full }}-{{ $ordinal }}.{{ $domain }}</host>
+              <port>9000</port>
+              <user>default</user>
+              <password from_env="CLICKHOUSE_DEFAULT_PASSWORD"/>
+            </replica>
+            {{- end }}
+          </shard>
+          {{- end }}
+        </{{ $cluster }}>
+      </remote_servers>
+    </clickhouse>
+
+{{- if .Values.ha.enabled }}
+  20-keeper.xml: |
+    <clickhouse>
+      <zookeeper>
+        {{- range $i := until (int .Values.keeper.replicas) }}
+        <node>
+          <host>{{ include "clickhouse.keeper.fullname" $ }}-{{ $i }}.{{ include "clickhouse.keeper.headlessDomain" $ }}</host>
+          <port>9181</port>
+        </node>
+        {{- end }}
+      </zookeeper>
+      <distributed_ddl>
+        <path>/clickhouse/task_queue/ddl</path>
+      </distributed_ddl>
+    </clickhouse>
+
+  30-ha.xml: |
+    <clickhouse>
+      <interserver_http_credentials>
+        <user>default</user>
+        <password from_env="CLICKHOUSE_DEFAULT_PASSWORD"/>
+      </interserver_http_credentials>
+      <!-- Store SQL-defined users/roles in keeper so RBAC replicates. -->
+      <user_directories replace="replace">
+        <users_xml>
+          <path>users.xml</path>
+        </users_xml>
+        <replicated>
+          <zookeeper_path>/clickhouse/access/</zookeeper_path>
+        </replicated>
+      </user_directories>
+    </clickhouse>
+{{- end }}
+
+{{- with .Values.clickhouse.systemLogs }}
+{{- if .enabled }}
+  25-system-logs.xml: |
+    <clickhouse>
+      <!--
+        Bound the size of the system.*_log tables. Defaults ship with no TTL and
+        monthly partitions, which lets trace_log / metric_log / query_log grow
+        until they fill the disk. Apply an expiry TTL and daily partitions so old
+        data is dropped promptly.
+      -->
+      {{- range .managed }}
+      {{- if not (has . $.Values.clickhouse.systemLogs.disable) }}
+      <{{ . }}>
+        {{- if $.Values.clickhouse.systemLogs.dailyPartitions }}
+        <partition_by>event_date</partition_by>
+        {{- end }}
+        {{- if $.Values.clickhouse.systemLogs.ttlDays }}
+        <ttl>event_date + INTERVAL {{ $.Values.clickhouse.systemLogs.ttlDays }} DAY DELETE</ttl>
+        {{- end }}
+        {{- if $.Values.clickhouse.systemLogs.flushIntervalMilliseconds }}
+        <flush_interval_milliseconds>{{ $.Values.clickhouse.systemLogs.flushIntervalMilliseconds }}</flush_interval_milliseconds>
+        {{- end }}
+        {{- if and (eq . "metric_log") $.Values.clickhouse.systemLogs.metricCollectIntervalMilliseconds }}
+        <collect_interval_milliseconds>{{ $.Values.clickhouse.systemLogs.metricCollectIntervalMilliseconds }}</collect_interval_milliseconds>
+        {{- end }}
+      </{{ . }}>
+      {{- end }}
+      {{- end }}
+      {{- range .disable }}
+      <!-- Disabled: system.{{ . }} table is not created or written. -->
+      <{{ . }} remove="1"/>
+      {{- end }}
+    </clickhouse>
+{{- end }}
+{{- end }}
+
+{{- if and .Values.backup.enabled (eq .Values.backup.destination.type "path") }}
+  40-backups.xml: |
+    <clickhouse>
+      <backups>
+        <allowed_path>{{ .Values.backup.destination.path.directory }}</allowed_path>
+      </backups>
+    </clickhouse>
+{{- end }}
+
+{{- range $name, $content := .Values.clickhouse.extraConfig }}
+  {{ $name }}: |
+    {{- $content | nindent 4 }}
+{{- end }}
