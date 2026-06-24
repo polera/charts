@@ -4,6 +4,35 @@ entries:
   - annotations:
       artifacthub.io/changes: |
         - kind: added
+          description: Add the Altinity clickhouse-backup engine (backup.engine=clickhouse-backup) with keyless S3 (IRSA) and GCS (Workload Identity) auth.
+    apiVersion: v2
+    appVersion: "24.8"
+    created: "2026-06-24T02:40:49.211070085Z"
+    description: Bootstrap an optionally highly-available ClickHouse cluster using
+      the official ClickHouse image, including admin account, databases, application
+      users and scheduled backup CronJobs.
+    digest: be6e376310cf540897ecf72ffd95351c757560e8ec757b3cc1f26b5885f82af7
+    home: https://clickhouse.com
+    keywords:
+    - clickhouse
+    - database
+    - olap
+    - analytics
+    - high-availability
+    maintainers:
+    - email: james@uncryptic.com
+      name: james
+    name: clickhouse
+    sources:
+    - https://hub.docker.com/_/clickhouse
+    - https://github.com/ClickHouse/ClickHouse
+    type: application
+    urls:
+    - https://github.com/polera/charts/releases/download/clickhouse-0.3.0/clickhouse-0.3.0.tgz
+    version: 0.3.0
+  - annotations:
+      artifacthub.io/changes: |
+        - kind: added
           description: Initial release of the ClickHouse chart.
     apiVersion: v2
     appVersion: "24.8"
@@ -30,4 +59,4 @@ entries:
     urls:
     - https://github.com/polera/charts/releases/download/clickhouse-0.1.0/clickhouse-0.1.0.tgz
     version: 0.1.0
-generated: "2026-06-24T01:50:49.074448967Z"
+generated: "2026-06-24T02:40:49.211079592Z"
