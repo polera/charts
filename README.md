@@ -1,4 +1,4 @@
-# ipx
+# charts.ipx.dev
 
 A [Helm](https://helm.sh) chart repository, served via GitHub Pages.
 
