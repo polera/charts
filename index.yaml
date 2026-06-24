@@ -3,6 +3,35 @@ entries:
   clickhouse:
   - annotations:
       artifacthub.io/changes: |
+        - kind: changed
+          description: Bump default appVersion to ClickHouse 26.3 (current LTS, replacing the older 24.8 LTS line).
+    apiVersion: v2
+    appVersion: "26.3"
+    created: "2026-06-24T02:51:43.268361313Z"
+    description: Bootstrap an optionally highly-available ClickHouse cluster using
+      the official ClickHouse image, including admin account, databases, application
+      users and scheduled backup CronJobs.
+    digest: afd2dfafe2d8227f111f7cf49059c3e077a16f761b35f3979dd07a12899b6b3a
+    home: https://clickhouse.com
+    keywords:
+    - clickhouse
+    - database
+    - olap
+    - analytics
+    - high-availability
+    maintainers:
+    - email: james@netdot.org
+      name: James Polera
+    name: clickhouse
+    sources:
+    - https://hub.docker.com/_/clickhouse
+    - https://github.com/ClickHouse/ClickHouse
+    type: application
+    urls:
+    - https://github.com/polera/charts/releases/download/clickhouse-0.4.0/clickhouse-0.4.0.tgz
+    version: 0.4.0
+  - annotations:
+      artifacthub.io/changes: |
         - kind: added
           description: Add the Altinity clickhouse-backup engine (backup.engine=clickhouse-backup) with keyless S3 (IRSA) and GCS (Workload Identity) auth.
     apiVersion: v2
@@ -59,4 +88,4 @@ entries:
     urls:
     - https://github.com/polera/charts/releases/download/clickhouse-0.1.0/clickhouse-0.1.0.tgz
     version: 0.1.0
-generated: "2026-06-24T02:40:49.211079592Z"
+generated: "2026-06-24T02:51:43.268369979Z"
