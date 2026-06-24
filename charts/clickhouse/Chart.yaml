@@ -6,10 +6,10 @@ description: >-
   scheduled backup CronJobs.
 type: application
 # Chart version — bump on every change to the chart itself.
-version: 0.3.0
+version: 0.4.0
 # Default application version — used as the image tag when image.tag is empty.
 # Pin this to a ClickHouse release you have validated.
-appVersion: "24.8"
+appVersion: "26.3"
 home: https://clickhouse.com
 sources:
   - https://hub.docker.com/_/clickhouse
@@ -21,9 +21,9 @@ keywords:
   - analytics
   - high-availability
 maintainers:
-  - name: james
-    email: james@uncryptic.com
+  - name: James Polera
+    email: james@netdot.org
 annotations:
   artifacthub.io/changes: |
-    - kind: added
-      description: Add the Altinity clickhouse-backup engine (backup.engine=clickhouse-backup) with keyless S3 (IRSA) and GCS (Workload Identity) auth.
+    - kind: changed
+      description: Bump default appVersion to ClickHouse 26.3 (current LTS, replacing the older 24.8 LTS line).
