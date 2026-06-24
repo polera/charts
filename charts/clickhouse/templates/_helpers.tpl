@@ -87,3 +87,98 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- define "clickhouse.envKey" -}}
 {{- . | upper | replace "-" "_" | replace "." "_" -}}
 {{- end -}}
+
+{{/* "true" when the Altinity clickhouse-backup engine is active. */}}
+{{- define "clickhouse.backup.chbEnabled" -}}
+{{- and .Values.backup.enabled (eq .Values.backup.engine "clickhouse-backup") -}}
+{{- end -}}
+
+{{/* Secret holding clickhouse-backup remote credentials (or an existing one). */}}
+{{- define "clickhouse.backup.chbSecretName" -}}
+{{- $chb := .Values.backup.clickhouseBackup -}}
+{{- $default := printf "%s-backup" (include "clickhouse.fullname" .) -}}
+{{- if eq $chb.remoteStorage "gcs" -}}
+{{- $chb.gcs.existingSecret | default $default -}}
+{{- else -}}
+{{- $chb.s3.existingSecret | default $default -}}
+{{- end -}}
+{{- end -}}
+
+{{/* Environment for the clickhouse-backup sidecar (config is env-driven). */}}
+{{- define "clickhouse.backup.chbEnv" -}}
+{{- $secret := include "clickhouse.secretName" . -}}
+{{- $chbSecret := include "clickhouse.backup.chbSecretName" . -}}
+{{- $chb := .Values.backup.clickhouseBackup -}}
+- name: LOG_LEVEL
+  value: info
+- name: API_LISTEN
+  value: "0.0.0.0:{{ $chb.apiPort }}"
+- name: API_USERNAME
+  value: {{ .Values.auth.admin.username | quote }}
+- name: API_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret }}
+      key: admin-password
+- name: CLICKHOUSE_HOST
+  value: localhost
+- name: CLICKHOUSE_PORT
+  value: "9000"
+- name: CLICKHOUSE_USERNAME
+  value: {{ .Values.auth.admin.username | quote }}
+- name: CLICKHOUSE_PASSWORD
+  valueFrom:
+    secretKeyRef:
+      name: {{ $secret }}
+      key: admin-password
+- name: REMOTE_STORAGE
+  value: {{ $chb.remoteStorage | quote }}
+- name: BACKUPS_TO_KEEP_REMOTE
+  value: {{ $chb.keepRemote | quote }}
+- name: COMPRESSION_FORMAT
+  value: {{ $chb.compressionFormat | quote }}
+{{- if eq $chb.remoteStorage "s3" }}
+- name: S3_BUCKET
+  value: {{ $chb.s3.bucket | quote }}
+- name: S3_PATH
+  value: {{ $chb.s3.path | quote }}
+- name: S3_REGION
+  value: {{ $chb.s3.region | quote }}
+{{- if $chb.s3.endpoint }}
+- name: S3_ENDPOINT
+  value: {{ $chb.s3.endpoint | quote }}
+{{- end }}
+- name: S3_FORCE_PATH_STYLE
+  value: {{ $chb.s3.forcePathStyle | quote }}
+{{- if eq $chb.s3.auth "keys" }}
+- name: S3_ACCESS_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $chbSecret }}
+      key: access-key
+- name: S3_SECRET_KEY
+  valueFrom:
+    secretKeyRef:
+      name: {{ $chbSecret }}
+      key: secret-key
+{{- else if $chb.s3.assumeRoleArn }}
+- name: S3_ASSUME_ROLE_ARN
+  value: {{ $chb.s3.assumeRoleArn | quote }}
+{{- end }}
+{{- else if eq $chb.remoteStorage "gcs" }}
+- name: GCS_BUCKET
+  value: {{ $chb.gcs.bucket | quote }}
+- name: GCS_PATH
+  value: {{ $chb.gcs.path | quote }}
+{{- if eq $chb.gcs.auth "key" }}
+- name: GCS_CREDENTIALS_JSON
+  valueFrom:
+    secretKeyRef:
+      name: {{ $chbSecret }}
+      key: credentials.json
+{{- else if $chb.gcs.saEmail }}
+- name: GCS_SA_EMAIL
+  value: {{ $chb.gcs.saEmail | quote }}
+{{- end }}
+{{- end }}
+{{- end -}}

@@ -11,7 +11,8 @@ The chart provisions, in one step:
 - Application **user accounts** with per-database grants.
 - Optional **High Availability** via a ClickHouse Keeper ensemble and replicated
   `Replicated*MergeTree` tables.
-- Optional scheduled **backup CronJobs** (to S3 or a local volume).
+- Optional scheduled **backups** to S3, GCS, or a local volume — via ClickHouse's
+  native `BACKUP` or an Altinity `clickhouse-backup` sidecar with keyless cloud auth.
 
 ## Architecture
 
@@ -22,7 +23,7 @@ The chart provisions, in one step:
 | Headless + ClusterIP `Service` | always | Stable per-pod DNS and a load-balanced client endpoint. |
 | Auth `Secret` | always | Auto-generated, upgrade-stable passwords. |
 | Config / users / init `ConfigMap`s | always | Cluster topology, user XML, and bootstrap SQL. |
-| Backup `CronJob` + `Secret` | `backup.enabled=true` | Scheduled `BACKUP DATABASE …`. |
+| Backup `CronJob` (+ `Secret`) | `backup.enabled=true` | Scheduled backups. `engine=native` runs `BACKUP DATABASE …`; `engine=clickhouse-backup` adds a sidecar to the server pods and triggers it over its REST API. |
 | `PodDisruptionBudget` | HA | Keeps a minimum of replicas available during disruptions. |
 | `ServiceMonitor` | `metrics.serviceMonitor.enabled` | Prometheus scrape config. |
 
@@ -93,13 +94,27 @@ ORDER BY ...;
 
 ## Backups
 
+Two engines are available via `backup.engine`:
+
+| Engine | Object-store auth | Notes |
+|--------|-------------------|-------|
+| `native` (default) | HMAC keys only | ClickHouse's built-in `BACKUP … TO`. Simple, streams directly. |
+| `clickhouse-backup` | HMAC keys **or keyless** (EKS IRSA / GKE Workload Identity) | [Altinity clickhouse-backup](https://github.com/Altinity/clickhouse-backup) sidecar + retention/incremental. |
+
+Use `clickhouse-backup` if you want keyless cloud auth — in particular, **GCS
+Workload Identity is only possible with this engine** (the native engine reaches
+GCS through its S3-interop endpoint, which accepts HMAC keys only).
+
+### Engine: `native`
+
 ```yaml
 backup:
   enabled: true
+  engine: native
   schedule: "0 2 * * *"        # nightly, UTC
   databases: []                # empty = all of .Values.databases
   destination:
-    type: s3                   # s3 | path
+    type: s3                   # s3 | gcs | path
     s3:
       endpoint: https://s3.amazonaws.com/my-bucket/clickhouse
       accessKeyId: AKIA...
@@ -107,21 +122,92 @@ backup:
       # or: existingSecret: my-s3-creds  (keys: access-key-id, secret-access-key)
 ```
 
-Each run issues `BACKUP DATABASE <db> TO S3('<endpoint>/<db>/<timestamp>', …)`
-against the cluster. For `type: path`, backups are written to a PVC mounted on
-the server pods (`backup.persistence.enabled=true`) and a `<backups>` allowed
-path is configured automatically.
+Google Cloud Storage uses its S3-compatible interoperability API with HMAC
+credentials (create them under *Cloud Storage > Settings > Interoperability*):
 
-Trigger an immediate backup:
-
-```bash
-kubectl create job -n data --from=cronjob/ch-clickhouse-backup manual-001
+```yaml
+  destination:
+    type: gcs
+    gcs:
+      endpoint: https://storage.googleapis.com/my-bucket/clickhouse
+      accessKeyId: GOOG1E...
+      secretAccessKey: ...
+      # or: existingSecret: my-gcs-creds  (keys: access-key-id, secret-access-key)
 ```
+
+Each run issues `BACKUP DATABASE <db> TO S3('<endpoint>/<db>/<timestamp>', …)`
+against the cluster (GCS reuses the same S3 backup function). For `type: path`,
+backups are written to a PVC mounted on the server pods
+(`backup.persistence.enabled=true`) and a `<backups>` allowed path is configured
+automatically.
 
 Restore example:
 
 ```sql
 RESTORE DATABASE analytics FROM S3('<endpoint>/analytics/<timestamp>', '<key>', '<secret>');
+```
+
+### Engine: `clickhouse-backup`
+
+A `clickhouse-backup` sidecar runs in every server pod (it needs file access to
+`/var/lib/clickhouse`) and exposes a REST API on `apiPort` (7171). A CronJob on
+`backup.schedule` calls `create_remote` against each shard's lead replica (and
+optionally schema-only on the other replicas). Backups land in object storage as
+`<namePrefix>-shard<N>-<timestamp>`.
+
+**S3 with keyless auth (EKS IRSA):**
+
+```yaml
+backup:
+  enabled: true
+  engine: clickhouse-backup
+  schedule: "0 2 * * *"
+  clickhouseBackup:
+    remoteStorage: s3
+    s3:
+      bucket: my-bucket
+      path: clickhouse
+      region: us-east-1
+      auth: iam              # omit static keys; use the pod's IAM role
+      # assumeRoleArn: arn:aws:iam::123456789012:role/clickhouse-backup
+serviceAccount:
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/clickhouse-backup
+```
+
+**GCS with keyless auth (GKE Workload Identity):**
+
+```yaml
+backup:
+  enabled: true
+  engine: clickhouse-backup
+  clickhouseBackup:
+    remoteStorage: gcs
+    gcs:
+      bucket: my-bucket
+      path: clickhouse
+      auth: workloadIdentity
+      saEmail: clickhouse-backup@my-project.iam.gserviceaccount.com
+serviceAccount:
+  annotations:
+    iam.gke.io/gcp-service-account: clickhouse-backup@my-project.iam.gserviceaccount.com
+```
+
+For static credentials instead, set `s3.auth: keys` with `accessKey`/`secretKey`
+(or `s3.existingSecret` with keys `access-key`/`secret-key`), or `gcs.auth: key`
+with `credentialsJson` (or `gcs.existingSecret` with key `credentials.json`).
+
+Restore (run against the target pod's sidecar API, e.g. pod `-0`):
+
+```bash
+kubectl exec -n data sts/ch-clickhouse-0 -c clickhouse-backup -- \
+  clickhouse-backup restore_remote --rm backup-shard0-<timestamp>
+```
+
+### Trigger an immediate backup (either engine)
+
+```bash
+kubectl create job -n data --from=cronjob/ch-clickhouse-backup manual-001
 ```
 
 ## Key values
@@ -139,7 +225,8 @@ RESTORE DATABASE analytics FROM S3('<endpoint>/analytics/<timestamp>', '<key>', 
 | `users` | `[app]` | Application users + grants. |
 | `persistence.size` | `50Gi` | Server data volume size. |
 | `keeper.replicas` | `3` | Keeper quorum size (use odd numbers). |
-| `backup.enabled` | `false` | Schedule backup CronJobs. |
+| `backup.enabled` | `false` | Schedule backups. |
+| `backup.engine` | `native` | `native` or `clickhouse-backup` (keyless cloud auth). |
 | `metrics.enabled` | `false` | Expose the Prometheus endpoint. |
 
 See [`values.yaml`](values.yaml) for the full list.

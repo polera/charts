@@ -60,11 +60,31 @@
       "type": "object",
       "properties": {
         "enabled": { "type": "boolean" },
+        "engine": { "type": "string", "enum": ["native", "clickhouse-backup"] },
         "schedule": { "type": "string" },
         "destination": {
           "type": "object",
           "properties": {
-            "type": { "type": "string", "enum": ["s3", "path"] }
+            "type": { "type": "string", "enum": ["s3", "gcs", "path"] }
+          }
+        },
+        "clickhouseBackup": {
+          "type": "object",
+          "properties": {
+            "remoteStorage": { "type": "string", "enum": ["s3", "gcs"] },
+            "apiPort": { "type": "integer", "minimum": 1 },
+            "s3": {
+              "type": "object",
+              "properties": {
+                "auth": { "type": "string", "enum": ["keys", "iam"] }
+              }
+            },
+            "gcs": {
+              "type": "object",
+              "properties": {
+                "auth": { "type": "string", "enum": ["key", "workloadIdentity"] }
+              }
+            }
           }
         }
       }

@@ -159,8 +159,17 @@ keeper:
 
 # Backups --------------------------------------------------------------------
 backup:
-  # -- Enable scheduled BACKUP CronJobs.
+  # -- Enable scheduled backups.
   enabled: false
+  # -- Backup engine.
+  #   native           - ClickHouse's built-in BACKUP ... TO S3()/File(). Simple,
+  #                      streams directly, but object-store auth is HMAC-only
+  #                      (no IAM/Workload Identity).
+  #   clickhouse-backup - Altinity clickhouse-backup running as a sidecar in the
+  #                      server pods, driven over its REST API by a CronJob.
+  #                      Supports keyless cloud auth (EKS IRSA / GKE Workload
+  #                      Identity) for S3 and GCS, plus incremental/retention.
+  engine: native
   # -- Cron schedule (UTC).
   schedule: "0 2 * * *"
   # -- Databases to back up. Empty list = every database in `.Values.databases`.
@@ -172,11 +181,22 @@ backup:
   backoffLimit: 1
   # Where backups are written.
   destination:
-    # type: s3 | path
+    # type: s3 | gcs | path
     type: s3
     s3:
       # e.g. https://s3.amazonaws.com/my-bucket/clickhouse-backups
       endpoint: ""
+      accessKeyId: ""
+      secretAccessKey: ""
+      # Reference an existing secret with keys access-key-id / secret-access-key
+      existingSecret: ""
+    # Google Cloud Storage via its S3-compatible interoperability API. Uses
+    # the same ClickHouse BACKUP ... TO S3(...) path with HMAC credentials
+    # (create them under Cloud Storage > Settings > Interoperability).
+    gcs:
+      # e.g. https://storage.googleapis.com/my-bucket/clickhouse-backups
+      endpoint: ""
+      # HMAC access key id and secret for the GCS interoperability API.
       accessKeyId: ""
       secretAccessKey: ""
       # Reference an existing secret with keys access-key-id / secret-access-key
@@ -186,12 +206,73 @@ backup:
       # Requires a writable volume; see persistence.backups below.
       directory: /backups
   # Optional dedicated PVC for `path` backups, mounted on the server pods.
+  # (engine: native, destination.type: path)
   persistence:
     enabled: false
     storageClass: ""
     accessModes:
       - ReadWriteOnce
     size: 50Gi
+
+  # Settings for engine: clickhouse-backup (Altinity sidecar + REST API). -----
+  # The sidecar runs in every server pod (it needs file access to
+  # /var/lib/clickhouse) and exposes the REST API on apiPort. A CronJob on
+  # `schedule` triggers `create_remote` per shard against the lead replica.
+  # Keyless cloud auth is enabled by annotating the chart ServiceAccount via
+  # `serviceAccount.annotations` (eks.amazonaws.com/role-arn for S3 IRSA, or
+  # iam.gke.io/gcp-service-account for GCS Workload Identity); the sidecar
+  # inherits it because it runs in the server pod.
+  clickhouseBackup:
+    image:
+      repository: altinity/clickhouse-backup
+      # -- Pin a released tag. Empty uses :latest.
+      tag: "2.7.2-fips"
+      pullPolicy: IfNotPresent
+    # -- Resources for the sidecar container.
+    resources: {}
+    # -- Port the sidecar REST API listens on.
+    apiPort: 7171
+    # -- Backup name prefix. Final names are <prefix>-shard<N>-<timestamp>.
+    namePrefix: backup
+    # -- Also create schema-only backups on the non-lead replicas of each shard,
+    # so replicated-table DDL is captured everywhere for restore safety.
+    schemaOnlyOtherReplicas: true
+    # -- Remote backups to retain (BACKUPS_TO_KEEP_REMOTE; 0 = keep all).
+    keepRemote: 7
+    # -- Compression format (tar, lz4, gzip, zstd, ...).
+    compressionFormat: tar
+    # -- Image used by the trigger CronJob. Must contain curl.
+    cronImage: curlimages/curl:8.10.1
+    # -- Remote storage backend: s3 | gcs.
+    remoteStorage: s3
+    s3:
+      bucket: ""
+      # Prefix within the bucket. The {shard} macro is supported.
+      path: clickhouse
+      region: us-east-1
+      # Set for S3-compatible stores (MinIO/Ceph); leave empty for AWS S3.
+      endpoint: ""
+      forcePathStyle: false
+      # auth: keys (static HMAC) | iam (keyless via IRSA / instance role).
+      auth: keys
+      accessKey: ""
+      secretKey: ""
+      # Optional role to assume (auth: iam). The pod's SA must be IRSA-bound.
+      assumeRoleArn: ""
+      # Reference an existing secret with keys: access-key / secret-key.
+      existingSecret: ""
+    gcs:
+      bucket: ""
+      path: clickhouse
+      # auth: key (static service-account JSON) | workloadIdentity (keyless).
+      auth: key
+      # Inline service-account JSON (auth: key).
+      credentialsJson: ""
+      # GCP service-account email to impersonate (auth: workloadIdentity). The
+      # pod's SA must be bound via GKE Workload Identity.
+      saEmail: ""
+      # Reference an existing secret with key: credentials.json.
+      existingSecret: ""
 
 # Service --------------------------------------------------------------------
 service:
