@@ -20,8 +20,8 @@ entries:
     - analytics
     - high-availability
     maintainers:
-    - email: james@uncryptic.com
-      name: james
+    - email: james@netdot.org
+      name: James Polera
     name: clickhouse
     sources:
     - https://hub.docker.com/_/clickhouse
